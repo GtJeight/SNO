@@ -1,5 +1,5 @@
 # 添加源文件
-file(GLOB_RECURSE inversesubdiv_src *.c *.cpp *.h *.hpp)
+file(GLOB_RECURSE ANN_src *.c *.cpp *.h *.hpp)
 
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${ANN_src})
 
