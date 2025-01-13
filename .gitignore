@@ -1,0 +1,10 @@
+bin/*
+build/*
+.vscode/*
+*.obj
+.DS_Store
+demo*
+/ignore/
+/data/
+/data - 副本
+/data - 副本 (2)
