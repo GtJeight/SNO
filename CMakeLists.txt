@@ -14,4 +14,5 @@ else()
 endif()
 
 # 添加UDOBoolean目录
-add_subdirectory(src)
+add_subdirectory(sno)
+add_subdirectory(main1)
