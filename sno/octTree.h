@@ -15,6 +15,12 @@
 #include "HLBFGS/HLBFGS.h"
 #include "ANN/ANN.h"
 
+namespace Eigen
+{
+	typedef Eigen::Map<Eigen::VectorXd> MapX;
+	typedef Eigen::Map<Eigen::VectorXd, 0, Eigen::InnerStride<3>> MapX_3;
+}
+
 class OctTree
 {
 	typedef Eigen::Triplet<double> Td;
@@ -78,25 +84,36 @@ private:
 	void get_outNode();
 
 	void serialize_tree();
+	void memory_setting();
+	void free_cuda();
+
+	std::unique_ptr<double[]> points_data;
+	std::unique_ptr<double[]> centers_data;
 	std::unique_ptr<double[]> normal_data;
 	std::unique_ptr<double[]> mu_data;
 	std::unique_ptr<double[]> mu1_data;
 	std::unique_ptr<double[]> Fdmu_data;
 	std::unique_ptr<double[]> Gdmu_data;
 
-	std::array<std::vector<double>, 2> node_pos;
-	std::array<std::vector<double>, 2 > node_width;
-	std::array<std::vector<int>, 2 > ngbr_list;
-	std::array<std::vector<int>, 2 > ngbr_list_startid;
-	std::array<std::vector<int>, 2 > ngbr_size_list;
+	std::vector<double> node_pos;
+	std::vector<double> node_width;
+	std::vector<int> ngbr_list;
+	std::vector<int> ngbr_list_startid;
+	std::vector<int> ngbr_size_list;
 
-	std::array<double*, 2> d_node_pos;
-	std::array<double*, 2 > d_node_width;
-	std::array<int*, 2 > d_ngbr_list;
-	std::array<int*, 2 > d_ngbr_list_startid;
-	std::array<int*, 2 > d_ngbr_size_list;
+	// multiply kernel needed
+	std::array<double*, 2> d_query_points;	// points or centers, pre-allocated
+	//double* d_points;						// equal to d_query_datap[0]
+	std::array<double*, 2> d_in_attr;		// normals or values
+	double* d_density;						// wds, pre-allocated
+	double* d_node_pos;						// required nodes info, pre-allocated
+	double* d_node_width;
+	int* d_ngbr_list;
+	int* d_ngbr_list_startid;
+	int* d_ngbr_size_list;					
 
-	void free_cuda();
+	double* d_out_attr;						// values or derivatives
+
 
 	void forward_A();
 	void forward_AT();

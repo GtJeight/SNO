@@ -7,12 +7,11 @@
 #include <fstream>
 #include <Eigen/SVD>  
 #include <Eigen/Eigen>
+
+#include "indicator.h"
+
 typedef std::pair<int, double> pad;
-namespace Eigen
-{
-	typedef Eigen::Map<Eigen::VectorXd> MapX;
-	typedef Eigen::Map<Eigen::VectorXd, 0, Eigen::InnerStride<3>> MapX_3;
-}
+
 
 OctTree::OctTree(PointCloud *p)
 {
@@ -30,11 +29,7 @@ OctTree::OctTree(PointCloud *p)
 	find_near_points();
 	calc_P();
 	serialize_tree();
-	normal_data = std::make_unique<double[]>(3 * points.size());
-	mu_data = std::make_unique<double[]>(points.size());
-	mu1_data = std::make_unique<double[]>(nopNode.size());
-	Fdmu_data = std::make_unique<double[]>(nopNode.size());
-	Gdmu_data = std::make_unique<double[]>(points.size());
+	memory_setting();
 }
 
 
@@ -424,21 +419,21 @@ void OctTree::serialize_tree()
 		}
 	}
 
-	ngbr_list_startid[0].resize(points.size());
-	ngbr_size_list[0].resize(points.size());
+	ngbr_list_startid.resize(points.size());
+	ngbr_size_list.resize(points.size());
 	for (int i = 0; i < points.size(); ++i)
 	{
-		ngbr_list_startid[0][i] = ngbr_list[0].size();
-		ngbr_size_list[0][i] = Ngbr[i].size();
+		ngbr_list_startid[i] = ngbr_list.size();
+		ngbr_size_list[i] = Ngbr[i].size();
 		for (int j = 0; j < Ngbr[i].size(); ++j)
 		{
 			OctNode* nodej = nodeArr[Ngbr[i][j]];
 			int idx = node_idx[nodej->nid];
-			node_pos[0].push_back(nodej->center.x);
-			node_pos[0].push_back(nodej->center.y);
-			node_pos[0].push_back(nodej->center.z);
-			node_width[0].push_back(DEPLEN[nodej->depth - 1]);
-			ngbr_list[0].push_back(idx);
+			node_pos.push_back(nodej->center.x);
+			node_pos.push_back(nodej->center.y);
+			node_pos.push_back(nodej->center.z);
+			node_width.push_back(DEPLEN[nodej->depth - 1]);
+			ngbr_list.push_back(idx);
 		}
 	}
 
@@ -455,52 +450,72 @@ void OctTree::serialize_tree()
 		}
 	}
 
-	ngbr_list_startid[1].resize(nopNode.size());
-	ngbr_size_list[1].resize(nopNode.size());
+	std::cout << "serialize finished" << std::endl;
+}
+
+void OctTree::memory_setting()
+{
+	points_data = std::make_unique<double[]>(3 * points.size());
+	for (int i = 0; i < points.size(); ++i)
+	{
+		points_data[i * 3] = points[i].x;
+		points_data[i * 3 + 1] = points[i].y;
+		points_data[i * 3 + 2] = points[i].z;
+	}
+	centers_data = std::make_unique<double[]>(3 * nopNode.size());
 	for (int i = 0; i < nopNode.size(); ++i)
 	{
-		ngbr_list_startid[1][i] = ngbr_list[1].size();
-		ngbr_size_list[1][i] = nodeArr[nopNode[i]]->around.size();
-		for (int j = 0; j < nodeArr[nopNode[i]]->around.size(); ++j)
-		{
-			OctNode* nodej = nodeArr[nodeArr[nopNode[i]]->around[j]];
-			int idx = node_idx[nodej->nid];
-			node_pos[1].push_back(nodej->center.x);
-			node_pos[1].push_back(nodej->center.y);
-			node_pos[1].push_back(nodej->center.z);
-			node_width[1].push_back(DEPLEN[nodej->depth - 1]);
-			ngbr_list[1].push_back(idx);
-		}
+		OctNode* nodei = nodeArr[nopNode[i]];
+		centers_data[i * 3] = nodei->center.x;
+		centers_data[i * 3 + 1] = nodei->center.y;
+		centers_data[i * 3 + 2] = nodei->center.z;
 	}
+	normal_data = std::make_unique<double[]>(3 * points.size());
+	mu_data = std::make_unique<double[]>(points.size());
+	mu1_data = std::make_unique<double[]>(nopNode.size());
+	Fdmu_data = std::make_unique<double[]>(nopNode.size());
+	Gdmu_data = std::make_unique<double[]>(points.size());
 
-	for (int i : {0, 1})
-	{
-		cudaMalloc(&d_node_pos[i], node_pos[i].size() * sizeof(double));
-		cudaMalloc(&d_node_width[i], node_width[i].size() * sizeof(double));
-		cudaMalloc(&d_ngbr_list[i], ngbr_list[i].size() * sizeof(int));
-		cudaMalloc(&d_ngbr_list_startid[i], ngbr_list_startid[i].size() * sizeof(int));
-		cudaMalloc(&d_ngbr_size_list[i], ngbr_size_list[i].size() * sizeof(int));
-		cudaMemcpy(d_node_pos[i], node_pos[i].data(), node_pos[i].size() * sizeof(double), cudaMemcpyHostToDevice);
-		cudaMemcpy(d_node_width[i], node_width[i].data(), node_width[i].size() * sizeof(double), cudaMemcpyHostToDevice);
-		cudaMemcpy(d_ngbr_list[i], ngbr_list[i].data(), ngbr_list[i].size() * sizeof(int), cudaMemcpyHostToDevice);
-		cudaMemcpy(d_ngbr_list_startid[i], ngbr_list_startid[i].data(), ngbr_list_startid[i].size() * sizeof(int), cudaMemcpyHostToDevice);
-		cudaMemcpy(d_ngbr_size_list[i], ngbr_size_list[i].data(), ngbr_size_list[i].size() * sizeof(int), cudaMemcpyHostToDevice);
-	}
+	cudaMalloc(&d_query_points[0], 3 * points.size() * sizeof(double));
+	cudaMalloc(&d_query_points[1], 3 * nopNode.size() * sizeof(double));
+	cudaMalloc(&d_density, points.size() * sizeof(double));
 
-	std::cout << "serialize finished" << std::endl;
+	cudaMemcpy(d_query_points[0], points_data.get(), 3 * points.size() * sizeof(double), cudaMemcpyHostToDevice);
+	cudaMemcpy(d_query_points[1], centers_data.get(), 3 * nopNode.size() * sizeof(double), cudaMemcpyHostToDevice);
+	cudaMemcpy(d_density, wds.data(), wds.size() * sizeof(double), cudaMemcpyHostToDevice);
+
+	cudaMalloc(&d_node_pos, node_pos.size() * sizeof(double));
+	cudaMalloc(&d_node_width, node_width.size() * sizeof(double));
+	cudaMalloc(&d_ngbr_list, ngbr_list.size() * sizeof(int));
+	cudaMalloc(&d_ngbr_list_startid, ngbr_list_startid.size() * sizeof(int));
+	cudaMalloc(&d_ngbr_size_list, ngbr_size_list.size() * sizeof(int));
+
+	cudaMemcpy(d_node_pos, node_pos.data(), node_pos.size() * sizeof(double), cudaMemcpyHostToDevice);
+	cudaMemcpy(d_node_width, node_width.data(), node_width.size() * sizeof(double), cudaMemcpyHostToDevice);
+	cudaMemcpy(d_ngbr_list, ngbr_list.data(), ngbr_list.size() * sizeof(int), cudaMemcpyHostToDevice);
+	cudaMemcpy(d_ngbr_list_startid, ngbr_list_startid.data(), ngbr_list_startid.size() * sizeof(int), cudaMemcpyHostToDevice);
+	cudaMemcpy(d_ngbr_size_list, ngbr_size_list.data(), ngbr_size_list.size() * sizeof(int), cudaMemcpyHostToDevice);
+
 }
 
 void OctTree::free_cuda()
 {
-	for (int i : {0, 1})
-	{
-		cudaFree(d_node_pos[i]);
-		cudaFree(d_node_width[i]);
-		cudaFree(d_ngbr_list[i]);
-		cudaFree(d_ngbr_list_startid[i]);
-		cudaFree(d_ngbr_size_list[i]);
-	}
+	cudaFree(d_query_points[0]);
+	cudaFree(d_query_points[1]);
+	cudaFree(d_density);
+	cudaFree(d_node_pos);
+	cudaFree(d_node_width);
+	cudaFree(d_ngbr_list);
+	cudaFree(d_ngbr_list_startid);
+	cudaFree(d_ngbr_size_list);
+
 	std::cout << "free_cuda finished" << std::endl;
+}
+
+void OctTree::forward_A()
+{
+	// p_i
+
 }
 
 void OctTree::get_allpoints(std::vector<int> &pid, int nid)
@@ -1024,6 +1039,7 @@ void OctTree::energy_evaluation_w_uv(const std::vector<double>& x, double& f, st
 	Eigen::VectorXd tempbv = B[0] * normal[0] + B[1] * normal[1] + B[2] * normal[2];	// sum D^(l)*n^(l), maybe
 	Eigen::VectorXd alp = A_solver.solve(tempbv);	// coeff alpha of nodal quadric basis
 	mu = P * alp;		// mu_p. P should be C = B_j(p_i)
+	//forward_A();
 	mu1 = P1 * alp;		// mu_c. P1 should be C = B_j(c_i)
 	std::cout << "mean: " << mu.mean()  << std::endl;
 	mu1 = mu1 - Eigen::VectorXd::Constant(nopN, mu.mean());
