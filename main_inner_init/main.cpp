@@ -107,7 +107,7 @@ int main(int argc, char *argv[])
 	//std::string fileName = argv[1];
 	//std::string dataPath = "..\\..\\data\\";
 	//std::string resultPath = "..\\..\\result\\";
-	std::string fileName = "cube_1000";
+	std::string fileName = "cube";
 	std::string dataPath = DATA_PATH_PREFIX;
 	std::string resultPath = std::string(DATA_PATH_PREFIX) + std::string("results/");
 	std::string type = ".xyz";
@@ -118,18 +118,28 @@ int main(int argc, char *argv[])
 	Eigen::VectorXd Ny = Eigen::VectorXd::Constant(N, 0);
 	Eigen::VectorXd Nz = Eigen::VectorXd::Constant(N, 0);
 	
-	std::vector<double> uv(2 * N);
+	std::ifstream in(dataPath + fileName + type);
+
+	// 重新打开文件并读取法向量
+	in.open(dataPath + std::string("cube_2998") + type);
 	std::vector<double> nor(3 * N);
-	srand(time(0));
-	//initialize
-	for (int i = 0; i < N; i++) {
-		uv[2 * i] = rand();
-		uv[2 * i + 1] = rand();
+	for (int i = 0; i < N; ++i) {
+		double x, y, z;
+		in >> x >> y >> z;                   // 忽略前三个坐标分量
+		in >> nor[3 * i] >> nor[3 * i + 1] >> nor[3 * i + 2];  // 读取法向量
 	}
-	for (int i = 0; i < N; i++) {
-		nor[3 * i] = sin(uv[2 * i]) * cos(uv[2 * i + 1]);
-		nor[3 * i + 1] = sin(uv[2 * i]) * sin(uv[2 * i + 1]);
-		nor[3 * i + 2] = cos(uv[2 * i]);
+	in.close();
+
+	// 转换法向量到球坐标 UV
+	std::vector<double> uv(2 * N);
+	for (int i = 0; i < N; ++i) {
+		double x = nor[3 * i], y = nor[3 * i + 1], z = nor[3 * i + 2];
+		double& u = uv[2 * i];
+		double& v = uv[2 * i + 1];
+
+		u = std::acos(z);  // 计算极角
+		v = std::atan2(y, x);  // 计算方位角
+		if (v < 0) v += 2 * PI;  // 调整到 [0, 2π)
 	}
 
 	OctTree octree(&pointcloud);

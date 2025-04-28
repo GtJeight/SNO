@@ -8,6 +8,12 @@
 #include <Eigen/SVD>  
 #include <Eigen/Eigen>
 typedef std::pair<int, double> pad;
+namespace Eigen
+{
+	typedef Eigen::Map<Eigen::VectorXd> MapX;
+	typedef Eigen::Map<Eigen::VectorXd, 0, Eigen::InnerStride<3>> MapX_3;
+}
+
 OctTree::OctTree(PointCloud *p)
 {
 	pc = p;
@@ -23,6 +29,12 @@ OctTree::OctTree(PointCloud *p)
 	calc_A();
 	find_near_points();
 	calc_P();
+	serialize_tree();
+	normal_data = std::make_unique<double[]>(3 * points.size());
+	mu_data = std::make_unique<double[]>(points.size());
+	mu1_data = std::make_unique<double[]>(nopNode.size());
+	Fdmu_data = std::make_unique<double[]>(nopNode.size());
+	Gdmu_data = std::make_unique<double[]>(points.size());
 }
 
 
@@ -392,6 +404,105 @@ void OctTree::get_outNode()
 		}
 	}
 }
+
+void OctTree::serialize_tree()
+{
+	// W(p): wds
+
+	// Ngbr(p): nodal_pos, nodal_width, ngbr_list, ngbr_start_id, ngbr_size_list
+	// for p_i
+	std::unordered_map<int, int> node_idx;
+	for (int i = 0; i < points.size(); ++i)
+	{
+		for (int j = 0; j < Ngbr[i].size(); ++j)
+		{
+			OctNode* nodej = nodeArr[Ngbr[i][j]];
+			if (!node_idx.count(nodej->nid))
+			{
+				node_idx[nodej->nid] = node_idx.size();
+			}
+		}
+	}
+
+	ngbr_list_startid[0].resize(points.size());
+	ngbr_size_list[0].resize(points.size());
+	for (int i = 0; i < points.size(); ++i)
+	{
+		ngbr_list_startid[0][i] = ngbr_list[0].size();
+		ngbr_size_list[0][i] = Ngbr[i].size();
+		for (int j = 0; j < Ngbr[i].size(); ++j)
+		{
+			OctNode* nodej = nodeArr[Ngbr[i][j]];
+			int idx = node_idx[nodej->nid];
+			node_pos[0].push_back(nodej->center.x);
+			node_pos[0].push_back(nodej->center.y);
+			node_pos[0].push_back(nodej->center.z);
+			node_width[0].push_back(DEPLEN[nodej->depth - 1]);
+			ngbr_list[0].push_back(idx);
+		}
+	}
+
+	// for c_i
+	node_idx.clear();
+	for (int i = 0; i < nopNode.size(); i++) {
+		OctNode* nodei = nodeArr[nopNode[i]];
+		for (int j = 0; j < nodei->around.size(); j++) {
+			OctNode* nodej = nodeArr[nodei->around[j]];
+			if (!node_idx.count(nodej->nid))
+			{
+				node_idx[nodej->nid] = node_idx.size();
+			}
+		}
+	}
+
+	ngbr_list_startid[1].resize(nopNode.size());
+	ngbr_size_list[1].resize(nopNode.size());
+	for (int i = 0; i < nopNode.size(); ++i)
+	{
+		ngbr_list_startid[1][i] = ngbr_list[1].size();
+		ngbr_size_list[1][i] = nodeArr[nopNode[i]]->around.size();
+		for (int j = 0; j < nodeArr[nopNode[i]]->around.size(); ++j)
+		{
+			OctNode* nodej = nodeArr[nodeArr[nopNode[i]]->around[j]];
+			int idx = node_idx[nodej->nid];
+			node_pos[1].push_back(nodej->center.x);
+			node_pos[1].push_back(nodej->center.y);
+			node_pos[1].push_back(nodej->center.z);
+			node_width[1].push_back(DEPLEN[nodej->depth - 1]);
+			ngbr_list[1].push_back(idx);
+		}
+	}
+
+	for (int i : {0, 1})
+	{
+		cudaMalloc(&d_node_pos[i], node_pos[i].size() * sizeof(double));
+		cudaMalloc(&d_node_width[i], node_width[i].size() * sizeof(double));
+		cudaMalloc(&d_ngbr_list[i], ngbr_list[i].size() * sizeof(int));
+		cudaMalloc(&d_ngbr_list_startid[i], ngbr_list_startid[i].size() * sizeof(int));
+		cudaMalloc(&d_ngbr_size_list[i], ngbr_size_list[i].size() * sizeof(int));
+		cudaMemcpy(d_node_pos[i], node_pos[i].data(), node_pos[i].size() * sizeof(double), cudaMemcpyHostToDevice);
+		cudaMemcpy(d_node_width[i], node_width[i].data(), node_width[i].size() * sizeof(double), cudaMemcpyHostToDevice);
+		cudaMemcpy(d_ngbr_list[i], ngbr_list[i].data(), ngbr_list[i].size() * sizeof(int), cudaMemcpyHostToDevice);
+		cudaMemcpy(d_ngbr_list_startid[i], ngbr_list_startid[i].data(), ngbr_list_startid[i].size() * sizeof(int), cudaMemcpyHostToDevice);
+		cudaMemcpy(d_ngbr_size_list[i], ngbr_size_list[i].data(), ngbr_size_list[i].size() * sizeof(int), cudaMemcpyHostToDevice);
+	}
+
+	std::cout << "serialize finished" << std::endl;
+}
+
+void OctTree::free_cuda()
+{
+	for (int i : {0, 1})
+	{
+		cudaFree(d_node_pos[i]);
+		cudaFree(d_node_width[i]);
+		cudaFree(d_ngbr_list[i]);
+		cudaFree(d_ngbr_list_startid[i]);
+		cudaFree(d_ngbr_size_list[i]);
+	}
+	std::cout << "free_cuda finished" << std::endl;
+}
+
 void OctTree::get_allpoints(std::vector<int> &pid, int nid)
 {
 	OctNode *node = nodeArr[nid];
@@ -616,6 +727,7 @@ void OctTree::calc_B()
 
 		}
 		for (auto it : aroSet) {
+			// aroSet: storing the basis that overlap with Ngbr(p)
 			OctNode *nodes = nodeArr[it];
 			Point ps = nodes->center;
 			int deps = nodes->depth;
@@ -672,6 +784,8 @@ void OctTree::calc_B()
 	B_T[0] = B[0].transpose();
 	B_T[1] = B[1].transpose();
 	B_T[2] = B[2].transpose();
+
+	std::cout << "asdfasdfd: " << B->rows() << " " << B->cols() << std::endl;
 }
 
 
@@ -865,6 +979,8 @@ void OctTree::optimize_LBFS_w_uv(std::vector<double>& x)
 	sig = 0.002;
 	solver.set_Info(it, 1);
 	solver.optimize_without_constraints(&(x[0]), 10000, this, &it);
+
+	free_cuda();
 }
 void OctTree::clear_near_points()
 {
@@ -885,40 +1001,61 @@ void OctTree::energy_evaluation_w_uv(const std::vector<double>& x, double& f, st
 	f = 0;
 	g.clear();
 	g.resize(2 * N, 0);
-	Eigen::VectorXd normal[3];
-	normal[0].resize(N);
-	normal[1].resize(N);
-	normal[2].resize(N);
+	std::array<Eigen::MapX_3, 3> normal = {
+		Eigen::MapX_3(normal_data.get(), N),
+		Eigen::MapX_3(normal_data.get() + 1, N),
+		Eigen::MapX_3(normal_data.get() + 2, N)
+	};
+	//Eigen::VectorXd normal[3];
+	//normal[0].resize(N);
+	//normal[1].resize(N);
+	//normal[2].resize(N);
 	for (int i = 0; i < N; i++) {
 		normal[0](i) = sin(x[2 * i]) * cos(x[2 * i + 1]);
 		normal[1](i) = sin(x[2 * i]) * sin(x[2 * i + 1]);
 		normal[2](i) = cos(x[2 * i]);
 	}
-	Eigen::VectorXd tempbv = B[0] * normal[0] + B[1] * normal[1] + B[2] * normal[2];
-	Eigen::VectorXd alp = A_solver.solve(tempbv);
-	Eigen::VectorXd mu = P * alp;
-	Eigen::VectorXd mu1 = P1 * alp;
+
+	Eigen::MapX mu(mu_data.get(), N);
+	Eigen::MapX mu1(mu1_data.get(), nopN);
+	Eigen::MapX Fdmu(Fdmu_data.get(), nopN);
+	Eigen::MapX Gdmu(Gdmu_data.get(), N);
+
+	Eigen::VectorXd tempbv = B[0] * normal[0] + B[1] * normal[1] + B[2] * normal[2];	// sum D^(l)*n^(l), maybe
+	Eigen::VectorXd alp = A_solver.solve(tempbv);	// coeff alpha of nodal quadric basis
+	mu = P * alp;		// mu_p. P should be C = B_j(p_i)
+	mu1 = P1 * alp;		// mu_c. P1 should be C = B_j(c_i)
 	std::cout << "mean: " << mu.mean()  << std::endl;
 	mu1 = mu1 - Eigen::VectorXd::Constant(nopN, mu.mean());
 	Eigen::VectorXd mu1_unit = mu1 / sig;
-	Eigen::VectorXd Fdmu = Eigen::VectorXd::Constant(nopN, 0);
+	Fdmu = Eigen::VectorXd::Constant(nopN, 0);
 	int oi = 0;
 	for (int i = 0; i < nopN; i++) {
 		double ln = 0;
 		int dep = nodeArr[nopNode[i]]->depth;
+
+		// phi_k(c_i)
 		for (int n = 0; n < near_points_id[i].size(); n++) {
 			int pid = near_points_id[i][n];
 			ln += near_points[i][3 * n] * normal[0](pid) +
 				near_points[i][3 * n + 1] * normal[1](pid) + near_points[i][3 * n + 2] * normal[2](pid);
 		}
+
+		// node volume L_i
 		double V = pow(2, nodeArr[nopNode[i]]->depth - APTDEPTH);
 		V = pow(DEPLEN[dep - 1], 3);
 		ln *= V;
+
+		// probability term
 		double p = 0.5 * erf(-mu1_unit(i) / sqrt(2));
 		if (i == outNode[oi]) {
 			p = -0.5;
 		}
+
+		// F value
 		f += ln * p;
+
+		// dF/dmu as expected
 		double dpdmu = (-1 / (sqrt(2 * PI) * sig)) * exp(-0.5 * pow(mu1_unit(i), 2));
 		if (i == outNode[oi]) {
 			dpdmu = 0;
@@ -943,7 +1080,7 @@ void OctTree::energy_evaluation_w_uv(const std::vector<double>& x, double& f, st
 	double f0 = f;
 	double fmu = mu.mean();
 	//f += gamma * sf * sf;
-	Eigen::VectorXd Gdmu = Eigen::VectorXd::Constant(N, 0);
+	Gdmu = Eigen::VectorXd::Constant(N, 0);
 	double gamma_ = gamma / N;
 	for (int i = 0; i < N; i++) {
 		double d = mu(i) - fmu;
@@ -952,6 +1089,7 @@ void OctTree::energy_evaluation_w_uv(const std::vector<double>& x, double& f, st
 	}
 	std::cout << "G: " << f - f0 << " ";
 
+	// computing CA^(-1)D^(l) by solving sparse system
 	Eigen::VectorXd Edx = P1_T * Fdmu + P_T * Gdmu;
 	Eigen::VectorXd y = A_solver.solve(Edx);
 	//std::cout << "A solver iterations2: " << A_solver.iterations() << std::endl;

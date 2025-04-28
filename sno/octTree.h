@@ -5,6 +5,10 @@
 #include <vector>
 #include <Eigen/Sparse>
 #include <Eigen/PardisoSupport>
+
+#include <cuda.h>
+#include <cuda_runtime.h>
+
 #include "basicStructure.h"
 #include "pointCloud.h"
 #include "octNode.h"
@@ -72,6 +76,30 @@ private:
 	void get_knear(Point p, int k, std::vector<int> &pid);
 	void get_allpoints(std::vector<int> &pid, int nid);
 	void get_outNode();
+
+	void serialize_tree();
+	std::unique_ptr<double[]> normal_data;
+	std::unique_ptr<double[]> mu_data;
+	std::unique_ptr<double[]> mu1_data;
+	std::unique_ptr<double[]> Fdmu_data;
+	std::unique_ptr<double[]> Gdmu_data;
+
+	std::array<std::vector<double>, 2> node_pos;
+	std::array<std::vector<double>, 2 > node_width;
+	std::array<std::vector<int>, 2 > ngbr_list;
+	std::array<std::vector<int>, 2 > ngbr_list_startid;
+	std::array<std::vector<int>, 2 > ngbr_size_list;
+
+	std::array<double*, 2> d_node_pos;
+	std::array<double*, 2 > d_node_width;
+	std::array<int*, 2 > d_ngbr_list;
+	std::array<int*, 2 > d_ngbr_list_startid;
+	std::array<int*, 2 > d_ngbr_size_list;
+
+	void free_cuda();
+
+	void forward_A();
+	void forward_AT();
 };
 
 
