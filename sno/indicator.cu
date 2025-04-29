@@ -2,6 +2,8 @@
 
 #define SPATIAL_DIM 3
 #define M_PI 3.14159265358979323846
+#define THREADS_PER_BLOCK 1024
+
 
 // Vector operation helper functions
 __forceinline__ __device__ void add_vec_(double* dst, const double* src, int n_dims) {
@@ -31,12 +33,14 @@ __forceinline__ __device__ double inner_prod(const double* vec1, const double* v
 }
 
 __forceinline__ __device__ double S(const double r) {
-    return erf(r) - 2 / sqrt(M_PI) * r * exp(-r * r);
+    double r_ = r / 0.75;
+    return erf(r_) - 2 / sqrt(M_PI) * r_ * exp(-r_ * r_);
 }
 
 __forceinline__ __device__ double eval_A_mu(const double* diff, const double* n, double width)
 {
 	double dist = sqrt(inner_prod(diff, diff, SPATIAL_DIM));
+    if (dist < 1e-12) return 0.0;
     double res = inner_prod(diff, n, SPATIAL_DIM);
     return res / (dist * dist * dist) * S(dist / width);
 }
@@ -44,10 +48,71 @@ __forceinline__ __device__ double eval_A_mu(const double* diff, const double* n,
 __forceinline__ __device__ void eval_AT_s_add(double* out, const double* diff, const double* s, double density , double width)
 {
     double dist = sqrt(inner_prod(diff, diff, SPATIAL_DIM));
+	if (dist < 1e-12) return;
     for (int k = 0; k < SPATIAL_DIM; ++k)
     {
         out[k] += (*s) * diff[k] / (4 * M_PI * density * dist * dist * dist) * S(dist / width);
     }
+}
+
+void multiply_by_A_cuda_kernel_launcher(
+    const double* d_query_points, 
+    const double* d_points, 
+    const double* d_normals, 
+    const double* d_density, 
+    const double* d_node_pos, 
+    const double* d_node_width, 
+    const int* d_ngbr_list, 
+    const int* d_ngbr_list_startid, 
+    const int* d_ngbr_size_list, 
+    int num_points, 
+    double* d_out_attr
+)
+{
+    int num_blocks = (num_points + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
+    multiply_by_A_cuda_kernel << <num_blocks, THREADS_PER_BLOCK >> > (
+        d_query_points,
+        d_points,
+        d_normals,
+        d_density,
+        d_node_pos,
+        d_node_width,
+        d_ngbr_list,
+        d_ngbr_list_startid,
+        d_ngbr_size_list,
+        num_points,
+        d_out_attr
+        );
+}
+
+void multiply_by_AT_cuda_kernel_launcher(
+    const double* d_query_points, 
+    const double* d_points, 
+    const double* d_query_attrs, 
+    const double* d_density, 
+    const double* d_node_pos, 
+    const double* d_node_width, 
+    const int* d_ngbr_list, 
+    const int* d_ngbr_list_startid, 
+    const int* d_ngbr_size_list, 
+    int num_querys, 
+    double* d_out_attr
+)
+{
+    int num_blocks = (num_querys + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
+    multiply_by_AT_cuda_kernel << <num_blocks, THREADS_PER_BLOCK >> > (
+        d_query_points,
+        d_points,
+        d_query_attrs,
+        d_density,
+        d_node_pos,
+        d_node_width,
+        d_ngbr_list,
+        d_ngbr_list_startid,
+        d_ngbr_size_list,
+        num_querys,
+        d_out_attr
+        );
 }
 
 __global__ void multiply_by_A_cuda_kernel(
@@ -78,8 +143,10 @@ __global__ void multiply_by_A_cuda_kernel(
                 diff[k] = node_pos[SPATIAL_DIM * node_idx + k] - query_points[SPATIAL_DIM * point_idx + k];
             }
 
-            out_val += eval_A_mu(diff, normals + SPATIAL_DIM * point_idx, node_width[node_idx]) / (4 * M_PI * density[point_idx]);
+            out_val += eval_A_mu(diff, normals + SPATIAL_DIM * point_idx, node_width[node_idx]);
         }
+
+        out_val /= (4 * M_PI * density[point_idx]);
     }
 
     out_attr[query_index] = out_val;
@@ -101,10 +168,9 @@ __global__ void multiply_by_AT_cuda_kernel(
 {
     int point_index = blockDim.x * blockIdx.x + threadIdx.x;
 
-    double out_vec[SPATIAL_DIM] = {};
+    double out_vec[SPATIAL_DIM] = { 0.,0.,0. };
     for (int query_idx = 0; query_idx < num_querys; ++query_idx)
     {
-        double vec[3] = { 0.,0.,0. };
 
         for (int j = 0; j < ngbr_size_list[point_index]; ++j)
         {

@@ -94,6 +94,8 @@ private:
 	std::unique_ptr<double[]> mu1_data;
 	std::unique_ptr<double[]> Fdmu_data;
 	std::unique_ptr<double[]> Gdmu_data;
+	std::unique_ptr<double[]> Edn_data;
+	std::unique_ptr<double[]> Edn_data_temp;
 
 	std::vector<double> node_pos;
 	std::vector<double> node_width;
@@ -104,7 +106,8 @@ private:
 	// multiply kernel needed
 	std::array<double*, 2> d_query_points;	// points or centers, pre-allocated
 	//double* d_points;						// equal to d_query_datap[0]
-	std::array<double*, 2> d_in_attr;		// normals or values
+	double* d_normals;						// normals
+	std::array<double*, 2> d_in_attr;		// values for points or centers
 	double* d_density;						// wds, pre-allocated
 	double* d_node_pos;						// required nodes info, pre-allocated
 	double* d_node_width;
@@ -112,11 +115,11 @@ private:
 	int* d_ngbr_list_startid;
 	int* d_ngbr_size_list;					
 
-	double* d_out_attr;						// values or derivatives
+	std::array<double*, 2> d_out_attr;		// values
+	double* d_out_derivatives;
 
-
-	void forward_A();
-	void forward_AT();
+	void forward_A(Eigen::MapX& mu, Eigen::MapX& mu1);
+	void forward_AT(Eigen::MapX& Edn);
 };
 
 

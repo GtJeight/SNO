@@ -437,15 +437,17 @@ void OctTree::serialize_tree()
 		}
 	}
 
-	// for c_i
-	node_idx.clear();
-	for (int i = 0; i < nopNode.size(); i++) {
-		OctNode* nodei = nodeArr[nopNode[i]];
-		for (int j = 0; j < nodei->around.size(); j++) {
-			OctNode* nodej = nodeArr[nodei->around[j]];
-			if (!node_idx.count(nodej->nid))
+	// check
+	for (int i = 0; i < points.size(); ++i)
+	{
+		for (int j = 0; j < Ngbr[i].size(); ++j)
+		{
+			OctNode* nodej = nodeArr[Ngbr[i][j]];
+			int idx = node_idx[nodej->nid];
+			if (idx != ngbr_list[ngbr_list_startid[i] + j])
 			{
-				node_idx[nodej->nid] = node_idx.size();
+				std::cout << "error" << std::endl;
+				return;
 			}
 		}
 	}
@@ -475,9 +477,14 @@ void OctTree::memory_setting()
 	mu1_data = std::make_unique<double[]>(nopNode.size());
 	Fdmu_data = std::make_unique<double[]>(nopNode.size());
 	Gdmu_data = std::make_unique<double[]>(points.size());
+	Edn_data = std::make_unique<double[]>(3 * points.size());
+	Edn_data_temp = std::make_unique<double[]>(3 * points.size());
 
 	cudaMalloc(&d_query_points[0], 3 * points.size() * sizeof(double));
 	cudaMalloc(&d_query_points[1], 3 * nopNode.size() * sizeof(double));
+	cudaMalloc(&d_normals, 3 * points.size() * sizeof(double));
+	cudaMalloc(&d_in_attr[0], points.size() * sizeof(double));
+	cudaMalloc(&d_in_attr[1], nopNode.size() * sizeof(double));
 	cudaMalloc(&d_density, points.size() * sizeof(double));
 
 	cudaMemcpy(d_query_points[0], points_data.get(), 3 * points.size() * sizeof(double), cudaMemcpyHostToDevice);
@@ -496,26 +503,105 @@ void OctTree::memory_setting()
 	cudaMemcpy(d_ngbr_list_startid, ngbr_list_startid.data(), ngbr_list_startid.size() * sizeof(int), cudaMemcpyHostToDevice);
 	cudaMemcpy(d_ngbr_size_list, ngbr_size_list.data(), ngbr_size_list.size() * sizeof(int), cudaMemcpyHostToDevice);
 
+	cudaMalloc(&d_out_attr[0], points.size() * sizeof(double));
+	cudaMalloc(&d_out_attr[1], nopNode.size() * sizeof(double));
+	cudaMalloc(&d_out_derivatives, 3 * points.size() * sizeof(double));
 }
 
 void OctTree::free_cuda()
 {
 	cudaFree(d_query_points[0]);
 	cudaFree(d_query_points[1]);
+	cudaFree(d_normals);
+	cudaFree(d_in_attr[0]);
+	cudaFree(d_in_attr[1]);
 	cudaFree(d_density);
 	cudaFree(d_node_pos);
 	cudaFree(d_node_width);
 	cudaFree(d_ngbr_list);
 	cudaFree(d_ngbr_list_startid);
 	cudaFree(d_ngbr_size_list);
+	cudaFree(d_out_attr[0]);
+	cudaFree(d_out_attr[1]);
+	cudaFree(d_out_derivatives);
 
 	std::cout << "free_cuda finished" << std::endl;
 }
 
-void OctTree::forward_A()
+void OctTree::forward_A(Eigen::MapX& mu, Eigen::MapX& mu1)
 {
-	// p_i
 
+	cudaMemcpy(d_normals, normal_data.get(), 3 * points.size() * sizeof(double), cudaMemcpyHostToDevice);
+
+	// p_i
+	multiply_by_A_cuda_kernel_launcher(
+		d_query_points[0],
+		d_query_points[0],
+		d_normals,
+		d_density,
+		d_node_pos,
+		d_node_width,
+		d_ngbr_list,
+		d_ngbr_list_startid,
+		d_ngbr_size_list,
+		points.size(),
+		d_out_attr[0]
+	);
+	cudaMemcpy(mu.data(), d_out_attr[0], points.size(), cudaMemcpyDeviceToHost);
+
+
+	// c_i
+	multiply_by_A_cuda_kernel_launcher(
+		d_query_points[1],
+		d_query_points[0],
+		d_normals,
+		d_density,
+		d_node_pos,
+		d_node_width,
+		d_ngbr_list,
+		d_ngbr_list_startid,
+		d_ngbr_size_list,
+		nopNode.size(),
+		d_out_attr[1]
+	);
+	cudaMemcpy(mu1.data(), d_out_attr[1], nopNode.size(), cudaMemcpyDeviceToHost);
+}
+
+void OctTree::forward_AT(Eigen::MapX& Edn)
+{
+	cudaMemcpy(d_in_attr[0], Gdmu_data.get(), points.size() * sizeof(double), cudaMemcpyHostToDevice);
+	multiply_by_AT_cuda_kernel_launcher(
+		d_query_points[0],
+		d_query_points[0],
+		d_in_attr[0],
+		d_density,
+		d_node_pos,
+		d_node_width,
+		d_ngbr_list,
+		d_ngbr_list_startid,
+		d_ngbr_size_list,
+		points.size(),
+		d_out_derivatives
+	);
+	cudaMemcpy(Edn_data.get(), d_out_derivatives, 3 * points.size(), cudaMemcpyDeviceToHost);
+
+	cudaMemcpy(d_in_attr[1], Fdmu_data.get(), nopNode.size() * sizeof(double), cudaMemcpyHostToDevice);
+	multiply_by_AT_cuda_kernel_launcher(
+		d_query_points[1],
+		d_query_points[0],
+		d_in_attr[0],
+		d_density,
+		d_node_pos,
+		d_node_width,
+		d_ngbr_list,
+		d_ngbr_list_startid,
+		d_ngbr_size_list,
+		points.size(),
+		d_out_derivatives
+	);
+	cudaMemcpy(Edn_data_temp.get(), d_out_derivatives, 3 * points.size(), cudaMemcpyDeviceToHost);
+
+	Edn += Eigen::MapX(Edn_data_temp.get(), 3 * points.size());
 }
 
 void OctTree::get_allpoints(std::vector<int> &pid, int nid)
@@ -761,7 +847,7 @@ void OctTree::calc_B()
 				wn[0] += alpha[j] * DBBx * BBy * BBz;
 				wn[1] += alpha[j] * BBx * DBBy * BBz;
 				wn[2] += alpha[j] * BBx * BBy * DBBz;
-				kpsr += sigma_g * Fo(ps, pj, depj);
+				kpsr += /*sigma_g * */Fo(ps, pj, depj);
 
 				for (int t = 0; t < nodes->inPointId.size(); t++) {
 					int ptid = nodes->inPointId[t];
@@ -799,8 +885,6 @@ void OctTree::calc_B()
 	B_T[0] = B[0].transpose();
 	B_T[1] = B[1].transpose();
 	B_T[2] = B[2].transpose();
-
-	std::cout << "asdfasdfd: " << B->rows() << " " << B->cols() << std::endl;
 }
 
 
@@ -1036,12 +1120,12 @@ void OctTree::energy_evaluation_w_uv(const std::vector<double>& x, double& f, st
 	Eigen::MapX Fdmu(Fdmu_data.get(), nopN);
 	Eigen::MapX Gdmu(Gdmu_data.get(), N);
 
-	Eigen::VectorXd tempbv = B[0] * normal[0] + B[1] * normal[1] + B[2] * normal[2];	// sum D^(l)*n^(l), maybe
-	Eigen::VectorXd alp = A_solver.solve(tempbv);	// coeff alpha of nodal quadric basis
-	mu = P * alp;		// mu_p. P should be C = B_j(p_i)
-	//forward_A();
-	mu1 = P1 * alp;		// mu_c. P1 should be C = B_j(c_i)
-	std::cout << "mean: " << mu.mean()  << std::endl;
+	//Eigen::VectorXd tempbv = B[0] * normal[0] + B[1] * normal[1] + B[2] * normal[2];	// sum D^(l)*n^(l), maybe
+	//Eigen::VectorXd alp = A_solver.solve(tempbv);	// coeff alpha of nodal quadric basis
+	//mu = P * alp;		// mu_p. P should be C = B_j(p_i)
+	//mu1 = P1 * alp;		// mu_c. P1 should be C = B_j(c_i)
+	forward_A(mu, mu1);
+	std::cout << "mean: " << mu.mean() << std::endl;
 	mu1 = mu1 - Eigen::VectorXd::Constant(nopN, mu.mean());
 	Eigen::VectorXd mu1_unit = mu1 / sig;
 	Fdmu = Eigen::VectorXd::Constant(nopN, 0);
@@ -1105,11 +1189,20 @@ void OctTree::energy_evaluation_w_uv(const std::vector<double>& x, double& f, st
 	}
 	std::cout << "G: " << f - f0 << " ";
 
-	// computing CA^(-1)D^(l) by solving sparse system
-	Eigen::VectorXd Edx = P1_T * Fdmu + P_T * Gdmu;
-	Eigen::VectorXd y = A_solver.solve(Edx);
-	//std::cout << "A solver iterations2: " << A_solver.iterations() << std::endl;
-	Eigen::VectorXd Edn[3] = { B_T[0] * y, B_T[1] * y, B_T[2] * y };
+	//// computing CA^(-1)D^(l) by solving sparse system
+	//Eigen::VectorXd Edx = P1_T * Fdmu + P_T * Gdmu;
+	//Eigen::VectorXd y = A_solver.solve(Edx);
+	////std::cout << "A solver iterations2: " << A_solver.iterations() << std::endl;
+	//Eigen::VectorXd Edn[3] = { B_T[0] * y, B_T[1] * y, B_T[2] * y };
+
+	Eigen::MapX Edn_all(Edn_data.get(), 3 * N);
+	forward_AT(Edn_all);
+	std::array<Eigen::MapX_3, 3> Edn = {
+		Eigen::MapX_3(Edn_data.get(), N),
+		Eigen::MapX_3(Edn_data.get() + 1, N),
+		Eigen::MapX_3(Edn_data.get() + 2, N)
+	};
+
 	for (int j = 0; j < N; j++) {
 		double sinuj = sin(x[2 * j]);
 		double cosuj = cos(x[2 * j]);
@@ -1118,6 +1211,8 @@ void OctTree::energy_evaluation_w_uv(const std::vector<double>& x, double& f, st
 		g[2 * j] += Edn[0](j) * cosuj * cosvj + Edn[1](j) * cosuj * sinvj + Edn[2](j) * -sinuj;
 		g[2 * j + 1] += Edn[0](j) * -sinuj * sinvj + Edn[1](j) * sinuj * cosvj;
 	}
+
+	//
 }
 
 void OctTree::energy_evaluation_w_print_p(const std::vector<double>& x, std::vector<double>& p)
