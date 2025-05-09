@@ -42,7 +42,7 @@ __forceinline__ __device__ double eval_A_mu(const double* diff, const double* n,
 	double dist = sqrt(inner_prod(diff, diff, SPATIAL_DIM));
     if (dist < 1e-12) return 0.0;
     double res = inner_prod(diff, n, SPATIAL_DIM);
-    return res / (dist * dist * dist) * S(dist / width);
+    return res / (dist * dist * dist) * S(dist / width) * pow(width, 3);
 }
 
 __forceinline__ __device__ void eval_AT_s_add(double* out, const double* diff, const double* s, double density , double width)

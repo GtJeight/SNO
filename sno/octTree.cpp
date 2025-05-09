@@ -8,7 +8,14 @@
 #include <Eigen/SVD>  
 #include <Eigen/Eigen>
 
+#include <chrono>
+
 #include "indicator.h"
+
+#define USE_GWN
+#define USE_GAUSS
+#define GAUSS_SIG 0.75
+#define M_PI 3.14159265358979323846
 
 typedef std::pair<int, double> pad;
 
@@ -228,6 +235,8 @@ inline double Fo(Point a, Point b, int depth)
 	double x = abs(a.x - b.x) / d;
 	double y = abs(a.y - b.y) / d;
 	double z = abs(a.z - b.z) / d;
+
+#ifndef USE_GAUSS
 	if (x > 1.5 || y > 1.5 || z > 1.5) {
 		return 0;
 	}
@@ -243,6 +252,11 @@ inline double Fo(Point a, Point b, int depth)
 	if (z < 0.5) {
 		zv = (0.75 - pow(z, 2));
 	}
+#else
+	double xv = exp(-x * x / (GAUSS_SIG * GAUSS_SIG)) / (sqrt(M_PI) * GAUSS_SIG);
+	double yv = exp(-y * y / (GAUSS_SIG * GAUSS_SIG)) / (sqrt(M_PI) * GAUSS_SIG);
+	double zv = exp(-z * z / (GAUSS_SIG * GAUSS_SIG)) / (sqrt(M_PI) * GAUSS_SIG);
+#endif
 	return xv * yv * zv;
 }
 
@@ -250,6 +264,7 @@ inline double B_func(double x, int d)
 {
 	double dep = DEPLEN[0.5, d - 1];
 	x = x / dep;
+#ifndef USE_GAUSS
 	if (abs(x) > 1.5) {
 		return 0;
 	}
@@ -260,12 +275,16 @@ inline double B_func(double x, int d)
 	{
 		return 0.5 * pow(1.5 - abs(x), 2);
 	}
+#else
+	return exp(-x * x / (GAUSS_SIG * GAUSS_SIG)) / (sqrt(M_PI) * GAUSS_SIG);
+#endif
 }
 
 inline double DB_func(double x, int d)
 {
 	double dep = DEPLEN[0.5, d - 1];
 	x = x / dep;
+#ifndef USE_GAUSS
 	if (abs(x) > 1.5) {
 		return 0;
 	}
@@ -279,6 +298,9 @@ inline double DB_func(double x, int d)
 	else {
 		return (x + 1.5) / dep;
 	}
+#else
+	return -2 * x * exp(-x * x / (GAUSS_SIG * GAUSS_SIG)) / (sqrt(M_PI) * pow(GAUSS_SIG, 3) * dep);
+#endif
 }
 
 inline double guassInt_BB(double x1, int d1, double x2, int d2)
@@ -833,7 +855,7 @@ void OctTree::calc_B()
 			Point ps = nodes->center;
 			int deps = nodes->depth;
 			double wn[3] = { 0, 0, 0 };
-			double kpsr = 0;
+			//double kpsr = 0;
 			for (int j = 0; j < Ngbr[i].size(); j++) {
 				OctNode *nodej = nodeArr[Ngbr[i][j]];
 				Point pj = nodej->center;
@@ -847,7 +869,7 @@ void OctTree::calc_B()
 				wn[0] += alpha[j] * DBBx * BBy * BBz;
 				wn[1] += alpha[j] * BBx * DBBy * BBz;
 				wn[2] += alpha[j] * BBx * BBy * DBBz;
-				kpsr += /*sigma_g * */Fo(ps, pj, depj);
+				//kpsr += sigma_g * Fo(ps, pj, depj);
 
 				for (int t = 0; t < nodes->inPointId.size(); t++) {
 					int ptid = nodes->inPointId[t];
@@ -1094,6 +1116,8 @@ void OctTree::clear_near_points()
 }
 void OctTree::energy_evaluation_w_uv(const std::vector<double>& x, double& f, std::vector<double>& g)
 {
+	auto start = std::chrono::high_resolution_clock::now();
+
 	int N = points.size();
 	int leafN = leafNodeArr.size();
 	int nopN = nopNode.size();
@@ -1120,11 +1144,14 @@ void OctTree::energy_evaluation_w_uv(const std::vector<double>& x, double& f, st
 	Eigen::MapX Fdmu(Fdmu_data.get(), nopN);
 	Eigen::MapX Gdmu(Gdmu_data.get(), N);
 
-	//Eigen::VectorXd tempbv = B[0] * normal[0] + B[1] * normal[1] + B[2] * normal[2];	// sum D^(l)*n^(l), maybe
-	//Eigen::VectorXd alp = A_solver.solve(tempbv);	// coeff alpha of nodal quadric basis
-	//mu = P * alp;		// mu_p. P should be C = B_j(p_i)
-	//mu1 = P1 * alp;		// mu_c. P1 should be C = B_j(c_i)
+#ifndef USE_GWN
+	Eigen::VectorXd tempbv = B[0] * normal[0] + B[1] * normal[1] + B[2] * normal[2];	// sum D^(l)*n^(l), maybe
+	Eigen::VectorXd alp = A_solver.solve(tempbv);	// coeff alpha of nodal quadric basis
+	mu = P * alp;		// mu_p. P should be C = B_j(p_i)
+	mu1 = P1 * alp;		// mu_c. P1 should be C = B_j(c_i)
+#else
 	forward_A(mu, mu1);
+#endif // !USE_GWN
 	std::cout << "mean: " << mu.mean() << std::endl;
 	mu1 = mu1 - Eigen::VectorXd::Constant(nopN, mu.mean());
 	Eigen::VectorXd mu1_unit = mu1 / sig;
@@ -1189,12 +1216,13 @@ void OctTree::energy_evaluation_w_uv(const std::vector<double>& x, double& f, st
 	}
 	std::cout << "G: " << f - f0 << " ";
 
-	//// computing CA^(-1)D^(l) by solving sparse system
-	//Eigen::VectorXd Edx = P1_T * Fdmu + P_T * Gdmu;
-	//Eigen::VectorXd y = A_solver.solve(Edx);
-	////std::cout << "A solver iterations2: " << A_solver.iterations() << std::endl;
-	//Eigen::VectorXd Edn[3] = { B_T[0] * y, B_T[1] * y, B_T[2] * y };
-
+#ifndef USE_GWN
+	// computing CA^(-1)D^(l) by solving sparse system
+	Eigen::VectorXd Edx = P1_T * Fdmu + P_T * Gdmu;
+	Eigen::VectorXd y = A_solver.solve(Edx);
+	//std::cout << "A solver iterations2: " << A_solver.iterations() << std::endl;
+	Eigen::VectorXd Edn[3] = { B_T[0] * y, B_T[1] * y, B_T[2] * y };
+#else
 	Eigen::MapX Edn_all(Edn_data.get(), 3 * N);
 	forward_AT(Edn_all);
 	std::array<Eigen::MapX_3, 3> Edn = {
@@ -1202,6 +1230,7 @@ void OctTree::energy_evaluation_w_uv(const std::vector<double>& x, double& f, st
 		Eigen::MapX_3(Edn_data.get() + 1, N),
 		Eigen::MapX_3(Edn_data.get() + 2, N)
 	};
+#endif // !USE_GWN
 
 	for (int j = 0; j < N; j++) {
 		double sinuj = sin(x[2 * j]);
@@ -1212,6 +1241,12 @@ void OctTree::energy_evaluation_w_uv(const std::vector<double>& x, double& f, st
 		g[2 * j + 1] += Edn[0](j) * -sinuj * sinvj + Edn[1](j) * sinuj * cosvj;
 	}
 
+
+	auto end = std::chrono::high_resolution_clock::now();
+
+	std::chrono::duration<double> elapsed = end - start;
+
+	std::cout << "Elapsed time: " << elapsed.count() << " seconds" << std::endl;
 	//
 }
 
